@@ -288,7 +288,7 @@ class Collection<T> {
     }
 
     return cList.length > 0 ? {
-      clause: cList.join(","),
+      clause: cList.join(" AND "),
       params
     } : null;
   }
@@ -317,7 +317,7 @@ export default class R2rSqlite {
           _id       INTEGER PRIMARY KEY AUTOINCREMENT,
           key       TEXT UNIQUE NOT NULL,
           name      TEXT NOT NULL,
-          sourceId  TEXT REFERENCES source(h),
+          sourceId  INTEGER REFERENCES source(_id),
           front     TEXT NOT NULL,
           back      TEXT,
           css       TEXT,
@@ -329,7 +329,7 @@ export default class R2rSqlite {
           _id       INTEGER PRIMARY KEY AUTOINCREMENT,
           key       TEXT UNIQUE NOT NULL,
           name      TEXT NOT NULL,
-          sourceId  TEXT REFERENCES source(h),
+          sourceId  INTEGER REFERENCES source(_id),
           dataJSON  TEXT NOT NULL,  -- Record<string, any>
           orderJSON TEXT NOT NULL   -- Record<string, number>
         )`);
@@ -338,7 +338,7 @@ export default class R2rSqlite {
         CREATE TABLE IF NOT EXISTS media (
           _id       INTEGER PRIMARY KEY AUTOINCREMENT,
           h         TEXT TEXT UNIQUE NOT NULL,
-          sourceId  TEXT REFERENCES source(h),
+          sourceId  INTEGER REFERENCES source(_id),
           name      TEXT NOT NULL,
           data      BLOB NOT NULL      
         )`);
@@ -346,9 +346,9 @@ export default class R2rSqlite {
     await db.exec(`
         CREATE TABLE IF NOT EXISTS card (
           _id         TEXT PRIMARY KEY,
-          deckId      INTEGER NOT NULL REFERENCES deck(id),
-          templateId  TEXT REFERENCES template(key),
-          noteId      TEXT REFERENCES note(key),
+          deckId      INTEGER NOT NULL REFERENCES deck(_id),
+          templateId  INTEGER REFERENCES template(_id),
+          noteId      INTEGER REFERENCES note(_id),
           front       TEXT NOT NULL,
           back        TEXT,
           mnemonic    TEXT,
@@ -526,19 +526,19 @@ export default class R2rSqlite {
     }
 
     if (["data", "order", "source"].some((k) => allFields.has(k))) {
-      joinClause.push("JOIN note n ON n.key = c.noteId");
+      joinClause.push("LEFT JOIN note n ON n._id = c.noteId");
     }
 
     if (["source"].some((k) => allFields.has(k))) {
-      joinClause.push("JOIN source s ON s.h = n.sourceId");
+      joinClause.push("LEFT JOIN source s ON s._id = n.sourceId");
     }
 
     if (["deck"].some((k) => allFields.has(k))) {
-      joinClause.push("JOIN deck d ON d._id = c.deckId");
+      joinClause.push("LEFT JOIN deck d ON d._id = c.deckId");
     }
 
     if (["tFront", "tBack", "template", "model", "css", "js"].some((k) => allFields.has(k))) {
-      joinClause.push("JOIN template t ON t.key = c.templateId");
+      joinClause.push("LEFT JOIN template t ON t._id = c.templateId");
     }
 
     const data = (await this.db.all(`
@@ -583,7 +583,6 @@ export default class R2rSqlite {
   public async insertMany(entries: IEntry[]): Promise<string[]> {
     entries = await Promise.all(entries.map((e) => this.transformCreateOrUpdate(null, e))) as IEntry[];
 
-    const eValidSource = entries.filter((e) => e.sourceH);
     const now = new Date().toISOString();
 
     const sIdMap: Record<string, number> = {};
@@ -880,7 +879,7 @@ export default class R2rSqlite {
         }
       }
 
-      u.tBack = (u.front || "").substr("@template\n".length);
+      u.tBack = (u.back || "").substr("@template\n".length);
       if (!front && cardId) {
         front = await this.getFront(cardId);
       }
@@ -921,7 +920,6 @@ export default class R2rSqlite {
     if (c && c.noteId) {
       const n = await this.note.get(["data", "order"], { key: c.noteId });
       if (n) {
-        console.log(n);
         for (const [k, v] of Object.entries(n.data!)) {
           output[n.order![k]] = {
             key: k,
@@ -1068,7 +1066,7 @@ export default class R2rSqlite {
     current = 0;
     max = card.length;
 
-    await chunk(card, 1000).mapAsync(async (c) => {
+    for (const c of chunk(card, 1000)) {
       if (callback) callback({ text: "Inserting cards", current, max });
 
       await c.mapAsync(async (el) => {
@@ -1127,7 +1125,7 @@ export default class R2rSqlite {
       });
 
       current += 1000;
-    });
+    };
   }
 }
 
