@@ -3,7 +3,7 @@ import SparkMD5 from "spark-md5";
 import { srsMap, getNextReview, repeatReview } from "./quiz";
 import QParser from "q2filter";
 import uuid from "uuid/v4";
-import { shuffle, ankiMustache, chunk, AsyncP } from "./util";
+import { shuffle, ankiMustache, chunk } from "./util";
 import stringify from "fast-json-stable-stringify";
 import Anki from "ankisync";
 import sqlite from "sqlite";
@@ -15,15 +15,17 @@ export interface IDbDeck {
 }
 
 export interface IDbSource {
-  h: string;  // h as _id
+  _id?: number;
+  h: string;
   name: string;
   created: string;
 }
 
 export interface IDbTemplate {
-  key?: string;  // key as _id
+  _id?: number;
+  key?: string;
   name: string;
-  sourceId?: string;
+  sourceId?: number;
   front: string;
   back?: string;
   css?: string;
@@ -31,16 +33,18 @@ export interface IDbTemplate {
 }
 
 export interface IDbNote {
-  key?: string;  // key as _id
+  _id?: number;
+  key?: string;
   name: string;
-  sourceId?: string;
+  sourceId?: number;
   data: Record<string, any>;
   order: Record<string, number>;
 }
 
 export interface IDbMedia {
-  h?: string;  // h as _id
-  sourceId?: string;
+  _id?: number;
+  h?: string;
+  sourceId?: number;
   name: string;
   data: ArrayBuffer;
 }
@@ -48,8 +52,8 @@ export interface IDbMedia {
 export interface IDbCard {
   _id: string;
   deckId: number;
-  templateId?: string;
-  noteId?: string;
+  templateId?: number;
+  noteId?: number;
   front: string;
   back?: string;
   mnemonic?: string;
@@ -162,7 +166,8 @@ class Collection<T> {
     const r = (await this.db.all(`
     SELECT ${selectClause.join(",")}
     FROM "${this.name}"
-    ${where ? `WHERE ${where.clause}` : ""} ${postfix || ""}`, ...(where ? where.params : []))).map((el) => {
+    ${where ? `WHERE ${where.clause}` : ""} ${postfix || ""}`,
+    ...(where ? where.params.map((el) => el === undefined ? null : el) : []))).map((el) => {
       for (const [k, v] of Object.entries(el)) {
         if (k.endsWith("JSON")) {
           try {
@@ -209,7 +214,7 @@ class Collection<T> {
     SET ${setK.join(",")}
     ${where ? `WHERE ${where.clause}` : ""}`,
       ...setV,
-      ...(where ? where.params : []));
+      ...(where ? where.params.map((el) => el === undefined ? null : el) : []));
 
     this.evt.emit("update", set, cond);
   }
@@ -224,7 +229,7 @@ class Collection<T> {
     await this.db.run(`
     DELETE FROM "${this.name}"
     ${where ? `WHERE ${where.clause}` : ""}`,
-      ...(where ? where.params : []));
+      ...(where ? where.params.map((el) => el === undefined ? null : el) : []));
 
     this.evt.emit("delete", cond);
   }
@@ -301,14 +306,16 @@ export default class R2rSqlite {
 
     await db.exec(`
         CREATE TABLE IF NOT EXISTS source (
-          h         TEXT PRIMARY KEY,
+          _id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          h         TEXT UNIQUE NOT NULL,
           name      TEXT NOT NULL,
           created   TEXT NOT NULL
         )`);
 
     await db.exec(`
         CREATE TABLE IF NOT EXISTS template (
-          key       TEXT PRIMARY KEY,
+          _id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          key       TEXT UNIQUE NOT NULL,
           name      TEXT NOT NULL,
           sourceId  TEXT REFERENCES source(h),
           front     TEXT NOT NULL,
@@ -319,7 +326,8 @@ export default class R2rSqlite {
 
     await db.exec(`
         CREATE TABLE IF NOT EXISTS note (
-          key       TEXT PRIMARY KEY,
+          _id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          key       TEXT UNIQUE NOT NULL,
           name      TEXT NOT NULL,
           sourceId  TEXT REFERENCES source(h),
           dataJSON  TEXT NOT NULL,  -- Record<string, any>
@@ -328,7 +336,8 @@ export default class R2rSqlite {
 
     await db.exec(`
         CREATE TABLE IF NOT EXISTS media (
-          h         TEXT PRIMARY KEY,
+          _id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          h         TEXT TEXT UNIQUE NOT NULL,
           sourceId  TEXT REFERENCES source(h),
           name      TEXT NOT NULL,
           data      BLOB NOT NULL      
@@ -376,14 +385,14 @@ export default class R2rSqlite {
     this.media = new Collection(this.db, "media");
 
     const tHook = (t: IDbTemplate) => {
-      t.key = this.getTemplateId(t);
+      t.key = this.getTemplateKey(t);
     };
 
     this.template.evt.on("pre-create", tHook);
     this.template.evt.on("pre-update", tHook);
 
     const nHook = (n: IDbNote) => {
-      n.key = this.getNoteId(n.data);
+      n.key = this.getNoteKey(n.data);
     };
 
     const mHook = (m: IDbMedia) => {
@@ -409,12 +418,12 @@ export default class R2rSqlite {
     ]);
   }
 
-  public getTemplateId(t: IDbTemplate) {
+  public getTemplateKey(t: IDbTemplate) {
     const { front, back, css, js } = t;
     return SparkMD5.hash(stringify({ front, back, css, js }));
   }
 
-  public getNoteId(data: Record<string, any>) {
+  public getNoteKey(data: Record<string, any>) {
     return SparkMD5.hash(stringify(data));
   }
 
@@ -577,34 +586,37 @@ export default class R2rSqlite {
     const eValidSource = entries.filter((e) => e.sourceH);
     const now = new Date().toISOString();
 
-    let sourceH: string = "";
-    for (const e of eValidSource.filter((e, i) => {
-      return eValidSource.map((e1) => e1.sourceH).indexOf(e.sourceH) === i
-    })) {
-      sourceH = e.sourceH!;
-      this.source.create({
-        name: e.source!,
-        created: e.sCreated || now,
-        h: e.sourceH!
+    const sIdMap: Record<string, number> = {};
+    await entries.filter((e) => e.sourceH).distinctBy((e) => e.sourceH!).mapAsync(async (el) => {
+      await this.source.create({
+        name: el.source!,
+        created: el.sCreated || now,
+        h: el.sourceH!
       }, true)
-    }
-
-    const eValidTemplate = entries.filter((e) => e.tFront);
-
-    eValidTemplate.map((e) => {
-      this.template.create({
-        name: e.template!,
-        front: e.tFront!,
-        back: e.tBack,
-        css: e.css,
-        js: e.js,
-        sourceId: sourceH
-      }, true);
+      sIdMap[el.sourceH!] = (await this.source.get(["_id"], {h: el.sourceH}))!._id!;
     });
 
-    const eValidNote = entries.filter((e) => e.data);
+    const tIdMap: Record<string, number> = {};
+    await entries.filter((el) => el.template).distinctBy((el) => el.template!).mapAsync(async (el) => {
+      const key = {
+        front: el.tFront!,
+        back: el.tBack,
+        css: el.css,
+        js: el.js
+      };
+      await this.template.create({
+        ...key,
+        name: el.template!,
+        sourceId: el.sourceH ? sIdMap[el.sourceH] : undefined
+      }, true);
+      tIdMap[el.template!] = (await this.template.get(["_id"], key))!._id!;
+    });
 
-    eValidNote.map((el) => {
+    const nIdMap: Record<string, number> = {};
+    await entries.filter((el) => el.data).distinctBy((el) => {
+      (el as any).key = SparkMD5.hash(stringify(el.data!));
+      return (el as any).key;
+    }).mapAsync(async (el) => {
       const data: Record<string, any> = {};
       const order: Record<string, number> = {};
 
@@ -615,14 +627,13 @@ export default class R2rSqlite {
         index++;
       }
 
-      (el as any).key = SparkMD5.hash(stringify(data));
-
-      this.note.create({
-        name: `${sourceH}/${el.template}/${el.data![0].value}`,
+      await this.note.create({
+        name: `${el.sourceH}/${el.template}/${el.data![0].value}`,
         data,
         order,
-        sourceId: sourceH
+        sourceId: el.sourceH ? sIdMap[el.sourceH] : undefined
       }, true);
+      nIdMap[(el as any).key] = (await this.note.get(["_id"], {data}))!._id!;
     })
 
     const dMap: { [key: string]: number } = {};
@@ -644,8 +655,8 @@ export default class R2rSqlite {
         srsLevel: e.srsLevel,
         nextReview: e.nextReview,
         deckId: dMap[e.deck],
-        noteId: (e as any).key,
-        templateId: e.template,
+        noteId: nIdMap[(e as any).key],
+        templateId: tIdMap[e.template!],
         created: now,
         tag: e.tag
       });
@@ -657,8 +668,8 @@ export default class R2rSqlite {
   public async updateMany(ids: string[], u: Partial<IEntry>) {
     const now = new Date().toISOString();
 
-    const cs = await new AsyncP(await this.card.find(["_id", ...Object.keys(u) as any[]], {_id: {$in: ids}}))
-    .map(async (c) => {
+    const cs = await (await this.card.find(["_id", ...Object.keys(u) as any[]], {_id: {$in: ids}}))
+    .mapAsync(async (c) => {
       const c0: any = Object.assign(c, await this.transformCreateOrUpdate(c._id!, u, now));
       const c1: any = {_id: c._id!};
 
@@ -674,8 +685,8 @@ export default class R2rSqlite {
             k = k.substr(1).toLocaleLowerCase();
           case "css":
           case "js":
-            const templateId = (await this.card.get(["templateId"], {_id: c._id!}))!.templateId!;
-            await this.template.update({[k]: v}, {key: templateId});
+            const { templateId } = (await this.card.get(["templateId"], {_id: c._id!}))!;
+            await this.template.update({[k]: v}, {_id: templateId});
             break;
           case "data":
             const noteId = (await this.card.get(["noteId"], {_id: c._id!}))!.noteId!;
@@ -699,7 +710,7 @@ export default class R2rSqlite {
                 data[key] = value;
               }
 
-              const key = this.getNoteId(data)
+              const key = this.getNoteKey(data)
               const name = `${key}/${Object.values(data)[0]}`;
               await this.note.create({key, name, order, data});
               c1.noteId = key;
@@ -949,9 +960,10 @@ export default class R2rSqlite {
     const data = fs.readFileSync(r2r.filename);
     const sourceH = SparkMD5.ArrayBuffer.hash(data);
     const now = new Date().toISOString();
+    let sourceId: number;
 
     try {
-      await this.source.create({
+      sourceId = await this.source.create({
         name: filename || r2r.filename,
         h: sourceH,
         created: now
@@ -965,13 +977,13 @@ export default class R2rSqlite {
       return this.media.create({
         name: m.name!,
         data: m.data!,
-        sourceId: sourceH
+        sourceId
       }, true);
     }));
 
     const deckIdMap: Record<string, number> = {};
 
-    await new AsyncP((await r2r.deck.find(["name"], {})).map(async (d) => {
+    await ((await r2r.deck.find(["name"], {})).map(async (d) => {
       try {
         deckIdMap[d.name!] = await this.deck.create({
           name: d.name!
@@ -1014,11 +1026,12 @@ export default class R2rSqlite {
     if (callback) callback({ text: "Reading Anki file" });
 
     const data = fs.readFileSync(anki.filePath);
-    const sourceH = SparkMD5.ArrayBuffer.hash(data);
     const now = new Date().toISOString();
+    let sourceId: number;
+    const sourceH = SparkMD5.ArrayBuffer.hash(data);
 
     try {
-      await this.source.create({
+      sourceId = await this.source.create({
         name: filename || anki.filePath,
         h: sourceH,
         created: now
@@ -1034,56 +1047,50 @@ export default class R2rSqlite {
     const media = await anki.apkg.tables.media.all();
     current = 0;
     max = media.length;
-    for (const el of media) {
+    await media.mapAsync(async (el) => {
       if (callback) callback({ text: "Inserting media", current, max });
 
-      try {
-        this.media.create({
-          h: el.h,
-          name: el.name,
-          data: el.data,
-          sourceId: sourceH
-        })
-      } catch (e) { }
+      await this.media.create({
+        h: el.h,
+        name: el.name,
+        data: el.data,
+        sourceId
+      }, true);
 
       current++;
-    }
+    });
 
     const card = await anki.apkg.tables.cards.all();
-    const deckIdMap: Record<string, number> = {};
-    const templateIdSet = new Set<string>();
-    const noteIdSet = new Set<string>();
+    const dIdMap: Record<string, number> = {};
+    const tIdMap: Record<string, number> = {};
+    const nIdMap: Record<string, number> = {};
 
     current = 0;
     max = card.length;
 
-    for (const c of chunk(card, 1000)) {
+    await chunk(card, 1000).mapAsync(async (c) => {
       if (callback) callback({ text: "Inserting cards", current, max });
 
-      for (const el of c) {
-        if (!Object.keys(deckIdMap).includes(el.deck.name)) {
+      await c.mapAsync(async (el) => {
+        if (!Object.keys(dIdMap).includes(el.deck.name)) {
           const name = el.deck.name;
-          try {
-            deckIdMap[name] = await this.deck.create({ name });
-          } catch (e) {
-            const d = await this.deck.get(["_id"], { name });
-            deckIdMap[name] = d!._id!;
-          }
+          await this.deck.create({ name }, true);
+          dIdMap[name] = (await this.deck.get(["_id"], { name }))!._id!;
         }
 
         const t = {
           name: `${sourceH}/${el.note.model.name}/${el.template.name}`,
-          sourceId: sourceH,
           front: el.template.qfmt,
           back: el.template.afmt,
           css: el.note.model.css
         };
-        const templateId = this.getTemplateId(t);
-        if (!templateIdSet.has(templateId)) {
-          templateIdSet.add(templateId);
-          try {
-            await this.template.create(t);
-          } catch (e) { }
+        const templateKey = this.getTemplateKey(t);
+        if (!Object.keys(tIdMap).includes(templateKey)) {
+          await this.template.create({
+            ...t,
+            sourceId
+          }, true);
+          tIdMap[templateKey] = (await this.template.get(["_id"], t))!._id!;
         }
 
         const data: Record<string, string> = {};
@@ -1092,34 +1099,35 @@ export default class R2rSqlite {
           data[k] = el.note.flds[i];
           order[k] = i;
         });
-        const key = SparkMD5.hash(stringify(data));
-        if (!noteIdSet.has(key)) {
+        const key = this.getNoteKey(data);
+        if (!Object.keys(nIdMap).includes(key)) {
           await this.note.create({
             key,
             name: `${sourceH}/${el.note.model.name}/${el.template.name}/${el.note.flds[0]}`,
             data,
             order,
-            sourceId: sourceH
+            sourceId
           }, true);
+          nIdMap[key] = (await this.note.get(["_id"], {data}))!._id!;
         }
 
         const front = ankiMustache(el.template.qfmt, data);
         const back = ankiMustache(el.template.afmt, data, front);
 
-        this.card.create({
+        await this.card.create({
           _id: uuid(),
-          deckId: deckIdMap[el.deck.name],
-          templateId,
-          noteId: key,
+          deckId: dIdMap[el.deck.name],
+          templateId: tIdMap[templateKey],
+          noteId: nIdMap[key],
           front: `@md5\n${SparkMD5.hash(front)}`,
           back: `@md5\n${SparkMD5.hash(back)}`,
           created: now,
           tag: el.note.tags
         }, true);
-      }
+      });
 
       current += 1000;
-    }
+    });
   }
 }
 

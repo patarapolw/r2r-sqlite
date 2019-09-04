@@ -41,20 +41,24 @@ export function chunk<T>(array: T[], size: number): T[][] {
   return results;
 }
 
-export class AsyncP<T> {
-  private args: T[];
-
-  constructor(args: T[]) {
-    this.args = args;
+declare global {
+  interface Array<T> {
+    distinctBy<U extends string | number>(mapFn: (el: T) => U): T[];
+    mapAsync<U>(mapFn: (value: T, index: number, array: T[]) => Promise<U>): Promise<U[]>;
   }
+}
 
-  public async map<U>(callbackfn: (value: T, index: number, array: T[]) => Promise<U>, thisArg?: any) {
-    return await Promise.all(this.args.map(async (value, index, array) => {
-      try {
-        return await callbackfn(value, index, array);
-      } catch(e) {
-        throw e;
-      }
-    }, thisArg));
-  }
+Array.prototype.distinctBy = function(mapFn) {
+  const uniqueKeys = new Set(this.map(mapFn));
+  return this.filter((el) => uniqueKeys.has(mapFn(el)));
+}
+
+Array.prototype.mapAsync = async function(mapFn) {
+  return await Promise.all(this.map(async (value, index, array) => {
+    try {
+      return await mapFn(value, index, array);
+    } catch(e) {
+      throw e;
+    }
+  }));
 }
