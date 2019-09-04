@@ -42,7 +42,7 @@ export interface IDbMedia {
   h?: string;  // h as _id
   sourceId?: string;
   name: string;
-  data: Buffer;
+  data: ArrayBuffer;
 }
 
 export interface IDbCard {
@@ -289,7 +289,7 @@ class Collection<T> {
   }
 }
 
-export default class R2r {
+export default class R2rSqlite {
   public static async connect(filename: string) {
     const db = await sqlite.open(filename);
 
@@ -351,7 +351,7 @@ export default class R2r {
           statJSON    TEXT NOT NULL DEFAULT '{}'
         )`);
 
-    return new R2r({ db, filename });
+    return new R2rSqlite({ db, filename });
   }
 
   public db: sqlite.Database;
@@ -940,7 +940,7 @@ export default class R2r {
     return "";
   }
 
-  public async fromR2r(r2r: R2r, options?: { filename?: string, callback?: (p: IProgress) => void }) {
+  public async fromR2r(r2r: R2rSqlite, options?: { filename?: string, callback?: (p: IProgress) => void }) {
     const filename = options ? options.filename : undefined;
     const callback = options ? options.callback : undefined;
 
@@ -996,6 +996,15 @@ export default class R2r {
     await Promise.all((await r2r.card.find("*", {})).map((c) => {
       return this.card.create(c as any, true);
     }));
+  }
+
+  public async getMedia(h: string): Promise<ArrayBuffer | null> {
+    const m = await this.media.get(["data"], {h});
+    if (m) {
+      return m.data!;
+    }
+
+    return null;
   }
 
   public async fromAnki(anki: Anki, options?: { filename?: string, callback?: (p: IProgress) => void }) {
@@ -1112,12 +1121,6 @@ export default class R2r {
       current += 1000;
     }
   }
-}
-
-export function cleanLokiObj(el: any) {
-  delete el.$loki;
-  delete el.meta;
-  return el;
 }
 
 interface IProgress {
