@@ -20,6 +20,9 @@
       "node",
       "mocha"
     ],
+    "typeRoots": [
+      "@types"
+    ],
     "paths": {
       "@/*": [
         "src/*"
