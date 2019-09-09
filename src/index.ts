@@ -1,7 +1,7 @@
 import fs from "fs";
 import SparkMD5 from "spark-md5";
 import { srsMap, getNextReview, repeatReview } from "./quiz";
-import QParser from "q2filter";
+import QParser, { dotGetter } from "q2filter";
 import uuid from "uuid/v4";
 import { shuffle, ankiMustache, chunk } from "./util";
 import stringify from "fast-json-stable-stringify";
@@ -96,12 +96,12 @@ export interface IEntry {
   sCreated?: Date;
 }
 
-interface ICondOptions {
+interface ICondOptions<T extends Record<string, any>> {
   offset?: number;
   limit?: number;
-  sortBy?: string;
+  sortBy?: keyof T;
   desc?: boolean;
-  fields?: string[];
+  fields?: Array<keyof T>;
 }
 
 interface IPagedOutput<T> {
@@ -187,9 +187,9 @@ export default class R2rSqlite {
 
   public async parseCond(
     q: string,
-    options: ICondOptions = {}
+    options: ICondOptions<any> = {}
   ): Promise<IPagedOutput<any>> {
-    const parser = new QParser({
+    const parser = new QParser<any>({
       anyOf: ["template", "front", "mnemonic", "deck", "tag"],
       isString: ["template", "front", "back", "mnemonic", "deck", "tag"],
       isDate: ["created", "modified", "nextReview"],
@@ -248,69 +248,85 @@ export default class R2rSqlite {
       allFields.add("key");
     }
 
-    const selectClause = new Set<string>();
-    const joinClause: string[] = [];
+    const select: Record<string, string[]> = {};
 
     for (const f of allFields) {
       switch (f) {
         case "order":
         case "data":
-          selectClause.add(`n.${f} AS ${f}`);
+        case "key":
+          select.note = select.note || [];
+          select.note.push(f);
           break;
         case "source":
-          selectClause.add(`s.name AS source`);
+          select.source = select.source || [];
+          select.source.push("name");
           break;
         case "deck":
-          selectClause.add(`d.name AS deck`);
+          select.deck = select.deck || [];
+          select.deck.push("name");
           break;
         case "tFront":
         case "tBack":
-          selectClause.add(`t.${f.substr(1).toLocaleLowerCase()} AS ${f}`);
+          select.template = select.template || [];
+          select.template.push(f.substr(1).toLocaleLowerCase());
           break;
         case "template":
-          selectClause.add(`t.name AS template`);
+          select.template = select.template || [];
+          select.template.push("name");
           break;
         case "css":
         case "js":
-          selectClause.add(`t.${f} AS ${f}`);
+          select.template = select.template || [];
+          select.template.push(f);
           break;
         default:
-          selectClause.add(`c.${f} AS ${f}`);
+          select.card = select.card || [];
+          select.card.push(f as string);
       }
     }
 
-    if (["data", "order", "source"].some((k) => allFields.has(k))) {
-      joinClause.push("LEFT JOIN note n ON n._id = c.noteId");
-    }
+    let chain = this.card.chain(select.card as any[]);
+    delete select.card;
+    for (const [tableName, rs] of Object.entries(select)) {
+      let on = `${tableName}Id`;
 
-    if (["source"].some((k) => allFields.has(k))) {
-      joinClause.push("LEFT JOIN source s ON s._id = n.sourceId");
-    }
-
-    if (["deck"].some((k) => allFields.has(k))) {
-      joinClause.push("LEFT JOIN deck d ON d._id = c.deckId");
-    }
-
-    if (["tFront", "tBack", "template", "model", "css", "js"].some((k) => allFields.has(k))) {
-      joinClause.push("LEFT JOIN template t ON t._id = c.templateId");
-    }
-
-    const data = (await this.db.all(`
-    SELECT ${Array.from(selectClause).join(",")}
-    FROM card c
-    ${joinClause.join("\n")}`)).map((el) => {
-      for (const [k, v] of Object.entries(el)) {
-        if (["data", "stat", "order", "tag"].includes(k)) {
-          try {
-            el[k] = JSON.parse(v as string);
-          } catch (e) { }
-        }
+      switch(tableName) {
+        case "source": "note.sourceId";
       }
 
-      return el;
-    })
+      chain = chain.join<any>(
+        (this as any)[tableName],
+        [`${tableName}._id`, on],
+        rs,
+        "left"
+      );
+    }
 
-    let cards = parser.filter(data, q);
+    const data = (await chain.data()).map((c) => {
+      const output = {
+        order: dotGetter(c, "note.order"),
+        data: dotGetter(c, "note.data"),
+        source: dotGetter(c, "source.name"),
+        deck: dotGetter(c, "deck.name"),
+        tFront: dotGetter(c, "template.front"),
+        tBack: dotGetter(c, "template.back"),
+        template: dotGetter(c, "template.name"),
+        css: dotGetter(c, "template.css"),
+        js: dotGetter(c, "template.js"),
+        front: dotGetter(c, "card.front"),
+        back: dotGetter(c, "card.back"),
+        mnemonic: dotGetter(c, "card.mnemonic"),
+        srsLevel: dotGetter(c, "card.srsLevel"),
+        nextReview: dotGetter(c, "card.nextReview"),
+        tag: dotGetter(c, "card.tag"),
+        created: dotGetter(c, "card.created"),
+        modified: dotGetter(c, "card.modified"),
+        stat: dotGetter(c, "card.stat")
+      };
+      return output;
+    });
+    const cards = parser.filter(data, q);
 
     let endPoint: number | undefined;
     if (options.limit) {
@@ -528,7 +544,7 @@ export default class R2rSqlite {
     const c = r.data[0];
     const { tFront, tBack, data } = c;
 
-    if (/@md5\n/.test(c.front)) {
+    if (/@md5\n/.test(c.front || "")) {
       c.front = ankiMustache(tFront || "", data);
     }
 
