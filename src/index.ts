@@ -5,9 +5,10 @@ import QParser, { dotGetter } from "q2filter";
 import uuid from "uuid/v4";
 import { shuffle, ankiMustache, chunk } from "./util";
 import stringify from "fast-json-stable-stringify";
-import Anki from "ankisync";
+import Anki, { IMedia } from "ankisync";
 import sqlite from "sqlite";
 import { Collection, prop, primary, Table } from "liteorm";
+import { R2rLocal, ICondOptions, IEntry, IPagedOutput, IRender, IProgress } from "./format";
 
 @Table({name: "deck"})
 class DbDeck {
@@ -72,79 +73,7 @@ class DbCard {
   };
 }
 
-export interface IEntry {
-  front: string;
-  deck: string;
-  back?: string;
-  mnemonic?: string;
-  srsLevel?: number;
-  nextReview?: Date;
-  tag?: string[];
-  created?: Date;
-  modified?: Date;
-  stat?: {
-    streak: { right: number; wrong: number };
-  };
-  template?: string;
-  tFront?: string;
-  tBack?: string;
-  css?: string;
-  js?: string;
-  data?: { key: string, value: any }[];
-  source?: string;
-  sourceH?: string;
-  sCreated?: Date;
-}
-
-interface ICondOptions<T extends Record<string, any>> {
-  offset?: number;
-  limit?: number;
-  sortBy?: keyof T;
-  desc?: boolean;
-  fields?: Array<keyof T>;
-}
-
-interface IPagedOutput<T> {
-  data: T[];
-  count: number;
-}
-
-export default class R2rSqlite {
-  public static async connect(filename: string) {
-    const db = await sqlite.open(filename);
-    const deck = await new Collection<DbDeck>(db, new DbDeck()).build();
-    const source = await new Collection<DbSource>(db, new DbSource()).build();
-    const template = await new Collection<DbTemplate>(db, new DbTemplate()).build();
-    const note = await new Collection<DbNote>(db, new DbNote()).build();
-    const media = await new Collection<DbMedia>(db, new DbMedia()).build();
-    const card = await new Collection<DbCard>(db, new DbCard()).build();
-
-    note.on("pre-create", (p) => {
-      p.entry.key = SparkMD5.hash(stringify(p.entry.data));
-    });
-
-    note.on("pre-update", (p) => {
-      if (p.set.data) {
-        p.set.key = SparkMD5.hash(stringify(p.set.data));
-      }
-    });
-
-    media.on("pre-create", (p) => {
-      p.entry.h = SparkMD5.ArrayBuffer.hash(p.entry.data);
-    });
-
-    media.on("pre-update", (p) => {
-      if (p.set.data) {
-        p.set.h = SparkMD5.ArrayBuffer.hash(p.set.data);
-      }
-    });
-
-    return new R2rSqlite({
-      db, filename,
-      deck, source, template, note, media, card
-    });
-  }
-
+export default class R2rSqlite extends R2rLocal {
   public db!: sqlite.Database;
   public filename!: string;
 
@@ -155,14 +84,45 @@ export default class R2rSqlite {
   public note!: Collection<DbNote>;
   public media!: Collection<DbMedia>;
 
-  private constructor(params: any) {
-    for (const [k, v] of Object.entries(params)) {
-      (this as any)[k] = v;
-    }
+  constructor(filename: string) {
+    super(filename);
+  }
+
+  public async build() {
+    this.db = await sqlite.open(this.filename);
+    this.deck = await new Collection<DbDeck>(this.db, new DbDeck()).build();
+    this.source = await new Collection<DbSource>(this.db, new DbSource()).build();
+    this.template = await new Collection<DbTemplate>(this.db, new DbTemplate()).build();
+    this.note = await new Collection<DbNote>(this.db, new DbNote()).build();
+    this.media = await new Collection<DbMedia>(this.db, new DbMedia()).build();
+    this.card = await new Collection<DbCard>(this.db, new DbCard()).build();
+
+    this.note.on("pre-create", (p) => {
+      p.entry.key = SparkMD5.hash(stringify(p.entry.data));
+    });
+
+    this.note.on("pre-update", (p) => {
+      if (p.set.data) {
+        p.set.key = SparkMD5.hash(stringify(p.set.data));
+      }
+    });
+
+    this.media.on("pre-create", (p) => {
+      p.entry.h = SparkMD5.ArrayBuffer.hash(p.entry.data);
+    });
+
+    this.media.on("pre-update", (p) => {
+      if (p.set.data) {
+        p.set.h = SparkMD5.ArrayBuffer.hash(p.set.data);
+      }
+    });
+
+    return this;
   }
 
   public async close() {
     await this.db.close();
+    return this;
   }
 
   public async reset() {
@@ -174,22 +134,18 @@ export default class R2rSqlite {
       this.card.delete({}),
       this.deck.delete({})
     ]);
+    return this;
   }
 
-  public getTemplateKey(t: any) {
-    const { front, back, css, js } = t;
-    return SparkMD5.hash(stringify({ front, back, css, js }));
-  }
+  public async parseCond(q: string,
+    options: ICondOptions<IEntry> = {}
+  ): Promise<IPagedOutput<Partial<IEntry>>> {
+    if (options.sortBy === "random") {
+      q += " is:random";
+      delete options.sortBy;
+    }
 
-  public getNoteKey(data: Record<string, any>) {
-    return SparkMD5.hash(stringify(data));
-  }
-
-  public async parseCond(
-    q: string,
-    options: ICondOptions<any> = {}
-  ): Promise<IPagedOutput<any>> {
-    const parser = new QParser<any>({
+    const parser = new QParser<IEntry>({
       anyOf: ["template", "front", "mnemonic", "deck", "tag"],
       isString: ["template", "front", "back", "mnemonic", "deck", "tag"],
       isDate: ["created", "modified", "nextReview"],
@@ -237,30 +193,37 @@ export default class R2rSqlite {
         data: [],
         count: 0
       };
+    } else if (options.fields === "*") {
+      options.fields = ["data", "source", "deck", "front" ,"js", "mnemonic", "modified",
+        "nextReview", "sCreated", "sH", "srsLevel", "stat", "tBack", "tFront", "tag",
+        "template", "back", "created", "css"];
     }
-
+    
     const allFields = new Set(options.fields || []);
     for (const f of (fullCond.fields || [])) {
       allFields.add(f);
     }
 
     if (q.includes("is:distinct") || q.includes("is:duplicate")) {
-      allFields.add("key");
+      allFields.add("data");
     }
 
     const select: Record<string, string[]> = {};
 
     for (const f of allFields) {
       switch (f) {
-        case "order":
         case "data":
-        case "key":
           select.note = select.note || [];
-          select.note.push(f);
+          select.note.push(f, "order");
           break;
         case "source":
           select.source = select.source || [];
           select.source.push("name");
+          break;
+        case "sH":
+        case "sCreated":
+          select.source = select.source || [];
+          select.source.push(f.substr(1).toLocaleLowerCase());
           break;
         case "deck":
           select.deck = select.deck || [];
@@ -292,12 +255,13 @@ export default class R2rSqlite {
       let on = `${tableName}Id`;
 
       switch(tableName) {
-        case "source": "note.sourceId";
+        case "source": on = "note.sourceId";
       }
 
       chain = chain.join<any>(
         (this as any)[tableName],
-        [`${tableName}._id`, on],
+        on,
+        "_id",
         rs,
         "left"
       );
@@ -305,9 +269,10 @@ export default class R2rSqlite {
 
     const data = (await chain.data()).map((c) => {
       const output = {
-        order: dotGetter(c, "note.order"),
-        data: dotGetter(c, "note.data"),
+        data: this.toSortedData({order: dotGetter(c, "note.order"), data: dotGetter(c, "note.data")}),
         source: dotGetter(c, "source.name"),
+        sourceCreated: dotGetter(c, "source.created"),
+        sourceH: dotGetter(c, "source.h"),
         deck: dotGetter(c, "deck.name"),
         tFront: dotGetter(c, "template.front"),
         tBack: dotGetter(c, "template.back"),
@@ -334,17 +299,7 @@ export default class R2rSqlite {
     }
 
     return {
-      data: cards.slice(options.offset || 0, endPoint).map((c: any) => {
-        if (options.fields) {
-          for (const k of Object.keys(c)) {
-            if (!options.fields.includes(k)) {
-              delete (c as any)[k];
-            }
-          }
-        }
-
-        return c;
-      }),
+      data: cards.slice(options.offset || 0, endPoint),
       count: cards.length
     };
   }
@@ -355,13 +310,13 @@ export default class R2rSqlite {
     const now = new Date();
 
     const sIdMap: Record<string, number> = {};
-    await entries.filter((e) => e.sourceH).distinctBy((e) => e.sourceH!).mapAsync(async (el) => {
+    await entries.filter((e) => e.sH).distinctBy((e) => e.sH!).mapAsync(async (el) => {
       await this.source.create({
         name: el.source!,
         created: el.sCreated || now,
-        h: el.sourceH!
+        h: el.sH!
       }, true)
-      sIdMap[el.sourceH!] = (await this.source.get({ h: el.sourceH }, ["_id"]))!._id!;
+      sIdMap[el.sH!] = (await this.source.get({ h: el.sH }, ["_id"]))!._id!;
     });
 
     const tIdMap: Record<string, number> = {};
@@ -375,7 +330,7 @@ export default class R2rSqlite {
       await this.template.create({
         ...key,
         name: el.template!,
-        sourceId: el.sourceH ? sIdMap[el.sourceH] : undefined
+        sourceId: el.sH ? sIdMap[el.sH] : undefined
       }, true);
       tIdMap[el.template!] = (await this.template.get(key, ["_id"]))!._id!;
     });
@@ -385,21 +340,13 @@ export default class R2rSqlite {
       (el as any).key = SparkMD5.hash(stringify(el.data!));
       return (el as any).key;
     }).mapAsync(async (el) => {
-      const data: Record<string, any> = {};
-      const order: Record<string, number> = {};
-
-      let index = 1;
-      for (const { key, value } of el.data!) {
-        data[key] = value;
-        order[key] = index
-        index++;
-      }
+      const {data, order} = this.fromSortedData(el.data!);
 
       await this.note.create({
-        name: `${el.sourceH}/${el.template}/${el.data![0].value}`,
+        name: `${el.sH}/${el.template}/${el.data![0].value}`,
         data,
         order,
-        sourceId: el.sourceH ? sIdMap[el.sourceH] : undefined
+        sourceId: el.sH ? sIdMap[el.sH] : undefined
       }, true);
       nIdMap[(el as any).key] = (await this.note.get({ data }, ["_id"]))!._id!;
     })
@@ -531,8 +478,8 @@ export default class R2rSqlite {
     }));
   }
 
-  public deleteMany(ids: string[]) {
-    return this.card.delete({ _id: { $in: ids } });
+  public async deleteMany(ids: string[]) {
+    await this.card.delete({ _id: { $in: ids } });
   }
 
   public async render(cardId: string) {
@@ -541,7 +488,7 @@ export default class R2rSqlite {
       fields: ["front", "back", "mnemonic", "tFront", "tBack", "data", "css", "js"]
     });
 
-    const c = r.data[0];
+    const c = r.data[0] as IRender;
     const { tFront, tBack, data } = c;
 
     if (/@md5\n/.test(c.front || "")) {
@@ -555,15 +502,7 @@ export default class R2rSqlite {
     return c;
   }
 
-  public markRight(cardId: string) {
-    return this.updateSrsLevel(+1, cardId);
-  }
-
-  public markWrong(cardId: string) {
-    return this.updateSrsLevel(-1, cardId);
-  }
-
-  private async updateSrsLevel(dSrsLevel: number, cardId: string) {
+  protected async updateSrsLevel(dSrsLevel: number, cardId: string) {
     const card = await this.card.get({ _id: cardId }, ["srsLevel", "stat"]);
 
     if (!card) {
@@ -608,7 +547,7 @@ export default class R2rSqlite {
     this.updateMany([cardId], { srsLevel, stat, nextReview });
   }
 
-  private async transformCreateOrUpdate(
+  protected async transformCreateOrUpdate(
     cardId: string | null,
     u: Partial<IEntry>,
     timestamp: Date = new Date()
@@ -625,7 +564,7 @@ export default class R2rSqlite {
     if (u.front && u.front.startsWith("@template\n")) {
       if (!data) {
         if (cardId) {
-          data = await this.getOrderedData(cardId);
+          data = await this.getData(cardId);
         } else {
           data = u.data || [];
         }
@@ -642,7 +581,7 @@ export default class R2rSqlite {
     if (u.back && u.back.startsWith("@template\n")) {
       if (!data) {
         if (cardId) {
-          data = await this.getOrderedData(cardId);
+          data = await this.getData(cardId);
         } else {
           data = u.data || [];
         }
@@ -662,7 +601,7 @@ export default class R2rSqlite {
     return u;
   }
 
-  private async getOrCreateDeck(name: string): Promise<number> {
+  protected async getOrCreateDeck(name: string): Promise<number> {
     try {
       return await this.deck.create({ name });
     } catch (e) {
@@ -670,19 +609,7 @@ export default class R2rSqlite {
     }
   }
 
-  private async getData(cardId: string): Promise<Record<string, any> | null> {
-    const c = await this.card.get({ _id: cardId }, ["noteId"]);
-    if (c && c.noteId) {
-      const n = await this.note.get({ key: c.noteId }, ["data"]);
-      if (n) {
-        return n.data || null;
-      }
-    }
-
-    return null;
-  }
-
-  private async getOrderedData(cardId: string): Promise<{ key: string, value: any }[]> {
+  protected async getData(cardId: string): Promise<{ key: string, value: any }[]> {
     const output: { key: string, value: any }[] = [];
 
     const c = await this.card.get({ _id: cardId }, ["noteId"]);
@@ -701,7 +628,7 @@ export default class R2rSqlite {
     return output;
   }
 
-  private async getFront(cardId: string): Promise<string> {
+  protected async getFront(cardId: string): Promise<string> {
     const c = await this.card.get({ _id: cardId }, ["front", "templateId"]);
     if (c && c.front) {
       if (c.front.startsWith("@md5\n") && c.templateId) {
@@ -750,7 +677,7 @@ export default class R2rSqlite {
 
     const deckIdMap: Record<string, number> = {};
 
-    await ((await r2r.deck.find({}, ["name"])).map(async (d) => {
+    await ((await r2r.deck.find({}, ["name"])).mapAsync(async (d) => {
       try {
         deckIdMap[d.name!] = await this.deck.create({
           name: d.name!
@@ -760,21 +687,49 @@ export default class R2rSqlite {
       }
     }));
 
-    await Promise.all((await r2r.template.find({})).map((t) => {
+    await (await r2r.template.find({})).mapAsync((t) => {
       return this.template.create({
         ...t,
         front: t.front!,
         name: `${sourceH}/${t.name}`
       }, true);
-    }));
+    });
 
-    await Promise.all((await r2r.note.find({})).map((n) => {
+    await (await r2r.note.find({})).mapAsync((n) => {
       return this.note.create(n as any, true);
-    }));
+    });
 
-    await Promise.all((await r2r.card.find({})).map((c) => {
+    await (await r2r.card.find({})).mapAsync((c) => {
       return this.card.create(c as any, true);
-    }));
+    });
+  }
+
+  public async export(r2r: R2rSqlite, q: string = "", 
+    options?: { callback?: (p: IProgress) => void }
+  ) {
+    const callback = options ? options.callback : undefined;
+    let current = 1;
+
+    const ms = await this.media.find({});
+    for (const m of ms) {
+      if (callback) callback({text: "Inserting media", current, max: ms.length});
+      await r2r.media.create(m as IMedia, true);
+      current++;
+    }
+    
+    if (callback) callback({text: "Parsing q"})
+    const cs = await this.parseCond(q, {
+      fields: "*"
+    });
+
+    current = 1;
+    for (const c of chunk(cs.data as IEntry[], 1000)) {
+      if (callback) callback({text: "Inserting cards", current, max: cs.count});
+      await r2r.insertMany(c);
+      current += 1000;
+    }
+
+    await r2r.close();
   }
 
   public async getMedia(h: string): Promise<ArrayBuffer | null> {
@@ -832,7 +787,7 @@ export default class R2rSqlite {
     const tIdMap: Record<string, number> = {};
     const nIdMap: Record<string, number> = {};
 
-    current = 0;
+    current = 1;
     max = card.length;
 
     for (const c of chunk(card, 1000)) {
@@ -896,10 +851,4 @@ export default class R2rSqlite {
       current += 1000;
     };
   }
-}
-
-interface IProgress {
-  text: string;
-  current?: number;
-  max?: number;
 }
