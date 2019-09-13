@@ -8,7 +8,7 @@ import stringify from "fast-json-stable-stringify";
 import Anki, { IMedia } from "ankisync";
 import sqlite from "sqlite";
 import { Collection, prop, primary, Table } from "liteorm";
-import { R2rLocal, ICondOptions, IEntry, IPagedOutput, IRender, IProgress } from "./format";
+import { R2rLocal, ICondOptions, IEntry, IPagedOutput, IRender, IProgress, toDate } from "./format";
 
 @Table({name: "deck"})
 class DbDeck {
@@ -251,18 +251,18 @@ export default class R2rSqlite extends R2rLocal {
 
     let chain = this.card.chain(select.card as any[]);
     delete select.card;
-    for (const [tableName, rs] of Object.entries(select)) {
-      let on = `${tableName}Id`;
+    for (const [rName, rSelect] of Object.entries(select)) {
+      let on = `${rName}Id`;
 
-      switch(tableName) {
+      switch(rName) {
         case "source": on = "note.sourceId";
       }
 
       chain = chain.join<any>(
-        (this as any)[tableName],
+        (this as any)[rName],
         on,
         "_id",
-        rs,
+        rSelect,
         "left"
       );
     }
@@ -313,7 +313,7 @@ export default class R2rSqlite extends R2rLocal {
     await entries.filter((e) => e.sH).distinctBy((e) => e.sH!).mapAsync(async (el) => {
       await this.source.create({
         name: el.source!,
-        created: el.sCreated || now,
+        created: toDate(el.sCreated) || now,
         h: el.sH!
       }, true)
       sIdMap[el.sH!] = (await this.source.get({ h: el.sH }, ["_id"]))!._id!;
@@ -368,7 +368,7 @@ export default class R2rSqlite extends R2rLocal {
         back: e.back,
         mnemonic: e.mnemonic,
         srsLevel: e.srsLevel,
-        nextReview: e.nextReview,
+        nextReview: toDate(e.nextReview),
         deckId: dMap[e.deck],
         noteId: nIdMap[(e as any).key],
         templateId: tIdMap[e.template!],

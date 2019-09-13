@@ -11,10 +11,10 @@ export interface IEntry {
   back?: string;
   mnemonic?: string;
   srsLevel?: number;
-  nextReview?: Date;
+  nextReview?: Date | string;
   tag?: string[];
-  created?: Date;
-  modified?: Date;
+  created?: Date | string;
+  modified?: Date | string;
   stat?: {
     streak: { right: number; wrong: number };
   };
@@ -26,7 +26,7 @@ export interface IEntry {
   data?: ISortedData;
   source?: string;
   sH?: string;
-  sCreated?: Date;
+  sCreated?: Date | string;
 }
 
 export interface IRender {
@@ -140,4 +140,8 @@ export interface IProgress {
   text: string;
   current?: number;
   max?: number;
+}
+
+export function toDate(s?: Date | string): Date | undefined {
+  return s ? new Date(s) : undefined;
 }
