@@ -3,12 +3,12 @@ import SparkMD5 from "spark-md5";
 import { srsMap, getNextReview, repeatReview } from "./quiz";
 import QParser, { dotGetter } from "q2filter";
 import uuid from "uuid/v4";
-import { shuffle, ankiMustache, chunk } from "./util";
+import { shuffle, chunk } from "./util";
 import stringify from "fast-json-stable-stringify";
 import Anki, { IMedia } from "ankisync";
 import sqlite from "sqlite";
 import { Collection, prop, primary, Table } from "liteorm";
-import { R2rLocal, ICondOptions, IEntry, IPagedOutput, IRender, IProgress, toDate } from "./format";
+import { R2rLocal, ICondOptions, IEntry, IPagedOutput, toDate, IRender, IProgress, fromSortedData, toSortedData, ankiMustache } from "@rep2recall/r2r-format";
 
 @Table({name: "deck"})
 class DbDeck {
@@ -97,25 +97,30 @@ export default class R2rSqlite extends R2rLocal {
     this.media = await new Collection<DbMedia>(this.db, new DbMedia()).build();
     this.card = await new Collection<DbCard>(this.db, new DbCard()).build();
 
-    this.note.on("pre-create", (p) => {
-      p.entry.key = SparkMD5.hash(stringify(p.entry.data));
-    });
+    const preNoteCreateOrUpdate = (entry: Partial<DbNote>) => {
+      if (entry.data) {
+        if (Array.isArray(entry.data)) {
+          const {data, order} = fromSortedData(entry.data as any[])
 
-    this.note.on("pre-update", (p) => {
-      if (p.set.data) {
-        p.set.key = SparkMD5.hash(stringify(p.set.data));
+          entry.data = data;
+          entry.order = order;
+        }
+
+        entry.key = SparkMD5.hash(stringify(entry.data));
       }
-    });
+    }
 
-    this.media.on("pre-create", (p) => {
-      p.entry.h = SparkMD5.ArrayBuffer.hash(p.entry.data);
-    });
+    this.note.on("pre-create", (p) => preNoteCreateOrUpdate(p.entry));
+    this.note.on("pre-update", (p) => preNoteCreateOrUpdate(p.set));
 
-    this.media.on("pre-update", (p) => {
-      if (p.set.data) {
-        p.set.h = SparkMD5.ArrayBuffer.hash(p.set.data);
+    function preMediaCreateOrUpdate(entry: Partial<DbMedia>) {
+      if (entry.data && !entry.h) {
+        entry.h = SparkMD5.ArrayBuffer.hash(entry.data);
       }
-    });
+    }
+
+    this.media.on("pre-create", (p) => preMediaCreateOrUpdate(p.entry));
+    this.media.on("pre-update", (p) => preMediaCreateOrUpdate(p.set));
 
     return this;
   }
@@ -269,7 +274,7 @@ export default class R2rSqlite extends R2rLocal {
 
     const data = (await chain.data()).map((c) => {
       const output = {
-        data: this.toSortedData({order: dotGetter(c, "note.order"), data: dotGetter(c, "note.data")}),
+        data: toSortedData({order: dotGetter(c, "note.order"), data: dotGetter(c, "note.data")}),
         source: dotGetter(c, "source.name"),
         sourceCreated: dotGetter(c, "source.created"),
         sourceH: dotGetter(c, "source.h"),
@@ -340,7 +345,7 @@ export default class R2rSqlite extends R2rLocal {
       (el as any).key = SparkMD5.hash(stringify(el.data!));
       return (el as any).key;
     }).mapAsync(async (el) => {
-      const {data, order} = this.fromSortedData(el.data!);
+      const {data, order} = fromSortedData(el.data!);
 
       await this.note.create({
         name: `${el.sH}/${el.template}/${el.data![0].value}`,
@@ -574,7 +579,7 @@ export default class R2rSqlite extends R2rLocal {
     }
 
     if (u.tFront) {
-      front = ankiMustache(u.tFront, data || {});
+      front = ankiMustache(u.tFront, data || []);
       u.front = "@md5\n" + SparkMD5.hash(front);
     }
 
@@ -594,7 +599,7 @@ export default class R2rSqlite extends R2rLocal {
     }
 
     if (u.tBack) {
-      const back = ankiMustache(u.tBack, data || {}, front);
+      const back = ankiMustache(u.tBack, data || [], front);
       u.back = "@md5\n" + SparkMD5.hash(back);
     }
 
@@ -635,7 +640,7 @@ export default class R2rSqlite extends R2rLocal {
         const t = await this.template.get({ name: c.templateId }, ["front"]);
         if (t) {
           const data = await this.getData(cardId);
-          return ankiMustache(t.front!, data || {});
+          return ankiMustache(t.front!, data || []);
         }
       }
 
@@ -645,7 +650,7 @@ export default class R2rSqlite extends R2rLocal {
     return "";
   }
 
-  public async fromR2r(r2r: R2rSqlite, options?: { filename?: string, callback?: (p: IProgress) => void }) {
+  public async fromR2r(r2r: R2rLocal, options?: { filename?: string, callback?: (p: IProgress) => void }) {
     const filename = options ? options.filename : undefined;
     const callback = options ? options.callback : undefined;
 
@@ -667,44 +672,22 @@ export default class R2rSqlite extends R2rLocal {
       return;
     }
 
-    await Promise.all((await r2r.media.find({}, ["name", "data"])).map((m) => {
+    await (await r2r.allMedia()).mapAsync((m) => {
       return this.media.create({
         name: m.name!,
         data: m.data!,
         sourceId
       }, true);
-    }));
-
-    const deckIdMap: Record<string, number> = {};
-
-    await ((await r2r.deck.find({}, ["name"])).mapAsync(async (d) => {
-      try {
-        deckIdMap[d.name!] = await this.deck.create({
-          name: d.name!
-        });;
-      } catch (e) {
-        deckIdMap[d.name!] = (await this.deck.get({ name: d.name }, ["_id"]))!._id!;
-      }
-    }));
-
-    await (await r2r.template.find({})).mapAsync((t) => {
-      return this.template.create({
-        ...t,
-        front: t.front!,
-        name: `${sourceH}/${t.name}`
-      }, true);
     });
 
-    await (await r2r.note.find({})).mapAsync((n) => {
-      return this.note.create(n as any, true);
+    const cs = await r2r.parseCond("", {
+      fields: "*"
     });
 
-    await (await r2r.card.find({})).mapAsync((c) => {
-      return this.card.create(c as any, true);
-    });
+    await r2r.insertMany(cs.data as IEntry[]);
   }
 
-  public async export(r2r: R2rSqlite, q: string = "", 
+  public async export(r2r: R2rLocal, q: string = "", 
     options?: { callback?: (p: IProgress) => void }
   ) {
     const callback = options ? options.callback : undefined;
@@ -713,7 +696,9 @@ export default class R2rSqlite extends R2rLocal {
     const ms = await this.media.find({});
     for (const m of ms) {
       if (callback) callback({text: "Inserting media", current, max: ms.length});
-      await r2r.media.create(m as IMedia, true);
+      try {
+        await r2r.createMedia(m as IMedia);
+      } catch(e) {}
       current++;
     }
     
@@ -732,13 +717,24 @@ export default class R2rSqlite extends R2rLocal {
     await r2r.close();
   }
 
-  public async getMedia(h: string): Promise<ArrayBuffer | null> {
-    const m = await this.media.get({ h }, ["data"]);
-    if (m) {
-      return m.data!;
-    }
+  public async getMedia(h: string): Promise<IMedia | null> {
+    const m = await this.media.get({ h }) as IMedia;
+    return m || null;
+  }
 
-    return null;
+  public async allMedia() {
+    return await this.media.find({}) as IMedia[];
+  }
+
+  public async createMedia(m: {name: string, data: ArrayBuffer}) {
+    const h = SparkMD5.ArrayBuffer.hash(m.data);
+    await this.media.create({...m, h});
+    return h;
+  }
+
+  public async deleteMedia(h: string) {
+    await this.media.delete({h});
+    return true;
   }
 
   public async fromAnki(anki: Anki, options?: { filename?: string, callback?: (p: IProgress) => void }) {
