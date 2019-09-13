@@ -201,7 +201,7 @@ export default class R2rSqlite extends R2rLocal {
     } else if (options.fields === "*") {
       options.fields = ["data", "source", "deck", "front" ,"js", "mnemonic", "modified",
         "nextReview", "sCreated", "sH", "srsLevel", "stat", "tBack", "tFront", "tag",
-        "template", "back", "created", "css"];
+        "template", "back", "created", "css", "_id"];
     }
     
     const allFields = new Set(options.fields || []);
