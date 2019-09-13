@@ -273,8 +273,10 @@ export default class R2rSqlite extends R2rLocal {
     }
 
     const data = (await chain.data()).map((c) => {
+      const {order, data} = c.note || {} as any;
+
       const output = {
-        data: toSortedData({order: dotGetter(c, "note.order"), data: dotGetter(c, "note.data")}),
+        data: order && data ? toSortedData({order, data}) : undefined,
         source: dotGetter(c, "source.name"),
         sourceCreated: dotGetter(c, "source.created"),
         sourceH: dotGetter(c, "source.h"),
@@ -292,7 +294,8 @@ export default class R2rSqlite extends R2rLocal {
         tag: dotGetter(c, "card.tag"),
         created: dotGetter(c, "card.created"),
         modified: dotGetter(c, "card.modified"),
-        stat: dotGetter(c, "card.stat")
+        stat: dotGetter(c, "card.stat"),
+        _id: dotGetter(c, "card._id")
       };
       return output;
     });
@@ -396,8 +399,8 @@ export default class R2rSqlite extends R2rLocal {
         for (let [k, v] of Object.entries(c0)) {
           switch (k) {
             case "deck":
-              k = "deckId",
-                v = await this.getOrCreateDeck(v as string);
+              k = "deckId";
+              v = await this.getOrCreateDeck(v as string);
               c1[k] = v;
               break;
             case "tFront":
