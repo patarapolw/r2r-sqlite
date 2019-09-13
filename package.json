@@ -1,8 +1,9 @@
 {
   "name": "@rep2recall/r2r-sqlite",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "R2r format engine for Rep2Recall",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "prepublishOnly": "npm run build",
     "test": "ts-mocha tests/**/*.spec.ts",
