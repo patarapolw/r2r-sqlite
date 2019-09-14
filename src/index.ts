@@ -389,6 +389,13 @@ export default class R2rSqlite extends R2rLocal {
   }
 
   public async updateMany(ids: string[], u: Partial<IEntry>) {
+    if (ids.length > 900) {
+      for (const idc of chunk(ids, 900)) {
+        await this.updateMany(idc, u);
+      }
+      return;
+    }
+
     const now = new Date();
 
     const cs = await (await this.card.find({ _id: { $in: ids } }, ["_id", ...Object.keys(u) as any[]]))
@@ -455,6 +462,13 @@ export default class R2rSqlite extends R2rLocal {
   }
 
   public async addTags(ids: string[], tags: string[]) {
+    if (ids.length > 900) {
+      for (const idc of chunk(ids, 900)) {
+        await this.addTags(idc, tags);
+      }
+      return;
+    }
+
     const now = new Date();
     await Promise.all((await this.card.find({ _id: { $in: ids } }, ["_id", "tag"])).map((c) => {
       c.modified = now;
@@ -469,6 +483,13 @@ export default class R2rSqlite extends R2rLocal {
   }
 
   public async removeTags(ids: string[], tags: string[]) {
+    if (ids.length > 900) {
+      for (const idc of chunk(ids, 900)) {
+        await this.removeTags(idc, tags);
+      }
+      return;
+    }
+
     const now = new Date();
     await Promise.all((await this.card.find({ _id: { $in: ids } }, ["_id", "tag"])).map((c) => {
       c.modified = now;
@@ -487,6 +508,13 @@ export default class R2rSqlite extends R2rLocal {
   }
 
   public async deleteMany(ids: string[]) {
+    if (ids.length > 900) {
+      for (const idc of chunk(ids, 900)) {
+        await this.deleteMany(idc);
+      }
+      return;
+    }
+
     await this.card.delete({ _id: { $in: ids } });
   }
 
@@ -552,7 +580,7 @@ export default class R2rSqlite extends R2rLocal {
     }
 
     const { srsLevel, stat, nextReview } = card;
-    this.updateMany([cardId], { srsLevel, stat, nextReview });
+    await this.updateMany([cardId], { srsLevel, stat, nextReview });
   }
 
   protected async transformCreateOrUpdate(
