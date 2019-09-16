@@ -6,8 +6,7 @@ import uuid from "uuid/v4";
 import { shuffle, chunk } from "./util";
 import stringify from "fast-json-stable-stringify";
 import Anki, { IMedia } from "ankisync";
-import sqlite from "sqlite";
-import { Collection, prop, primary, Table } from "liteorm";
+import Db, { prop, primary, Table, Collection } from "liteorm";
 import { R2rLocal, ICondOptions, IEntry, IPagedOutput, toDate, IRender, IProgress, fromSortedData, toSortedData, ankiMustache } from "@rep2recall/r2r-format";
 
 @Table({name: "deck"})
@@ -74,7 +73,7 @@ class DbCard {
 }
 
 export default class R2rSqlite extends R2rLocal {
-  public db!: sqlite.Database;
+  public db!: Db;
   public filename!: string;
 
   public deck!: Collection<DbDeck>;
@@ -89,13 +88,13 @@ export default class R2rSqlite extends R2rLocal {
   }
 
   public async build() {
-    this.db = await sqlite.open(this.filename);
-    this.deck = await new Collection<DbDeck>(this.db, new DbDeck()).build();
-    this.source = await new Collection<DbSource>(this.db, new DbSource()).build();
-    this.template = await new Collection<DbTemplate>(this.db, new DbTemplate()).build();
-    this.note = await new Collection<DbNote>(this.db, new DbNote()).build();
-    this.media = await new Collection<DbMedia>(this.db, new DbMedia()).build();
-    this.card = await new Collection<DbCard>(this.db, new DbCard()).build();
+    this.db = await Db.connect(this.filename);
+    this.deck = await this.db.collection(new DbDeck());
+    this.source = await this.db.collection(new DbSource());
+    this.template = await this.db.collection(new DbTemplate());
+    this.note = await this.db.collection(new DbNote());
+    this.media = await this.db.collection(new DbMedia());
+    this.card = await this.db.collection(new DbCard());
 
     const preNoteCreateOrUpdate = (entry: Partial<DbNote>) => {
       if (entry.data) {
