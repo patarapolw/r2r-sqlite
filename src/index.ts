@@ -149,10 +149,10 @@ export default class R2rSqlite extends R2rLocal {
       delete options.sortBy;
     }
 
-    const parser = new QParser<IEntry>({
-      anyOf: ["template", "front", "mnemonic", "deck", "tag"],
-      isString: ["template", "front", "back", "mnemonic", "deck", "tag"],
-      isDate: ["created", "modified", "nextReview"],
+    const parser = new QParser<IEntry>(q, {
+      anyOf: new Set(["template", "front", "mnemonic", "deck", "tag"]),
+      isString: new Set(["template", "front", "back", "mnemonic", "deck", "tag"]),
+      isDate: new Set(["created", "modified", "nextReview"]),
       transforms: {
         "is:due": () => {
           return { nextReview: { $lt: new Date() } }
@@ -186,11 +186,13 @@ export default class R2rSqlite extends R2rLocal {
           return shuffle(items);
         }
       },
-      sortBy: options.sortBy,
-      desc: options.desc
+      sortBy: options.sortBy ? {
+        key: options.sortBy,
+        desc: options.desc !== undefined ? options.desc : true
+      } : undefined
     });
 
-    const fullCond = parser.getCondFull(q);
+    const fullCond = parser.getCondFull();
 
     if (!options.fields) {
       return {
@@ -298,7 +300,7 @@ export default class R2rSqlite extends R2rLocal {
       };
       return output;
     });
-    const cards = parser.filter(data, q);
+    const cards = parser.parse(data);
 
     let endPoint: number | undefined;
     if (options.limit) {
