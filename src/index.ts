@@ -7,7 +7,8 @@ import { shuffle, chunk } from "./util";
 import stringify from "fast-json-stable-stringify";
 import Anki, { IMedia } from "ankisync";
 import Db, { prop, primary, Table, Collection } from "liteorm";
-import { R2rLocal, ICondOptions, IEntry, IPagedOutput, toDate, IRender, IProgress, fromSortedData, toSortedData, ankiMustache } from "@rep2recall/r2r-format";
+import { R2rLocal, ICondOptions, IEntry, IPagedOutput, IRender, IProgress, fromSortedData, toSortedData, ankiMustache } from "@rep2recall/r2r-format";
+import { toDate } from "valid-moment";
 
 @Table({name: "deck"})
 class DbDeck {
@@ -322,7 +323,7 @@ export default class R2rSqlite extends R2rLocal {
     await entries.filter((e) => e.sH).distinctBy((e) => e.sH!).mapAsync(async (el) => {
       await this.source.create({
         name: el.source!,
-        created: toDate(el.sCreated) || now,
+        created: (typeof el.sCreated === "string" ? toDate(el.sCreated) : el.sCreated) || now,
         h: el.sH!
       }, true)
       sIdMap[el.sH!] = (await this.source.get({ h: el.sH }, ["_id"]))!._id!;
@@ -377,7 +378,7 @@ export default class R2rSqlite extends R2rLocal {
         back: e.back,
         mnemonic: e.mnemonic,
         srsLevel: e.srsLevel,
-        nextReview: toDate(e.nextReview),
+        nextReview: (typeof e.nextReview === "string" ? toDate(e.nextReview) : e.nextReview) || undefined,
         deckId: dMap[e.deck],
         noteId: nIdMap[(e as any).key],
         templateId: tIdMap[e.template!],

@@ -1,6 +1,6 @@
 {
   "name": "@rep2recall/r2r-sqlite",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "R2r format engine for Rep2Recall",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,17 +21,18 @@
     "url": "https://github.com/patarapolw/rep2recall.git"
   },
   "dependencies": {
-    "@rep2recall/r2r-format": "file:../r2r-format",
+    "@rep2recall/r2r-format": "^0.1.5",
     "@types/fast-json-stable-stringify": "^2.0.0",
     "@types/spark-md5": "^3.0.1",
     "@types/uuid": "^3.4.5",
-    "ankisync": "file:../ankisync.js",
+    "ankisync": "^0.1.5",
     "fast-json-stable-stringify": "^2.0.0",
-    "liteorm": "file:../liteorm",
+    "liteorm": "^0.2.4",
     "moment": "^2.24.0",
-    "q2filter": "file:../q2filter",
+    "q2filter": "^0.2.0",
     "spark-md5": "^3.0.0",
-    "uuid": "^3.3.3"
+    "uuid": "^3.3.3",
+    "valid-moment": "^1.0.0"
   },
   "publishConfig": {
     "access": "public"
